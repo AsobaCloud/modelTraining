@@ -1,0 +1,11 @@
+=== Mistral Training Pipeline Log ===
+Run ID: mistral-20250804-164236
+Started: Mon Aug  4 16:42:36 CDT 2025
+===================================
+[2025-08-04 16:42:36] Starting Mistral training pipeline...
+[2025-08-04 16:42:36] Run ID: mistral-20250804-164236
+[2025-08-04 16:42:36] Verifying AWS credentials...
+[2025-08-04 16:42:36] Using existing instance: i-01fa5b57d64c6196a
+[2025-08-04 16:42:36] Instance IP: 54.197.142.172
+[2025-08-04 16:42:37] Testing SSH connection...
+[2025-08-04 16:42:38] ERROR: Cannot connect to instance via SSH. Check IP and key.

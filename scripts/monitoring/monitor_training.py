@@ -87,20 +87,51 @@ def show_single_run(viewer, run_id):
     print(f"📊 Training Run: {run_id}")
     print("=" * 80)
     
-    # Get metadata
+    # Get metadata from S3
     metadata = get_run_metadata(viewer, run_id)
     if metadata:
-        print(f"Model: {metadata.get('base_model', 'Unknown')}")
-        print(f"Started: {metadata.get('start_time', 'Unknown')}")
-        print(f"Instance: {metadata.get('instance_id', 'Unknown')}")
+        print(f"🤖 Model: {metadata.get('base_model', 'Unknown')}")
+        print(f"⏰ Started: {metadata.get('start_time', 'Unknown')}")
+        print(f"💻 Instance: {metadata.get('instance_id', 'Unknown')}")
+        print(f"📊 Status: {metadata.get('status', 'Unknown')}")
+        print(f"🔄 Phase: {metadata.get('phase', 'Unknown')}")
+        print(f"📝 Details: {metadata.get('details', 'None')}")
+        print(f"🕐 Last Update: {metadata.get('last_update', 'Unknown')}")
         print()
+        
+        # Process health check
+        status = metadata.get('status', 'unknown')
+        phase = metadata.get('phase', 'unknown')
+        last_update = metadata.get('last_update', '')
+        
+        if last_update:
+            try:
+                from datetime import datetime, timezone
+                import dateutil.parser
+                last_dt = dateutil.parser.parse(last_update)
+                now_dt = datetime.now(timezone.utc)
+                minutes_ago = (now_dt - last_dt).total_seconds() / 60
+                
+                if status == "running" and minutes_ago > 30:
+                    print(f"⚠️  WARNING: No updates for {minutes_ago:.1f} minutes - process may be stuck!")
+                elif status == "running":
+                    print(f"✅ Process appears healthy (updated {minutes_ago:.1f} minutes ago)")
+                
+                print()
+            except Exception:
+                pass
+    else:
+        print("❌ No metadata found in S3")
     
-    # Get current progress
+    # Get training progress data
     progress = viewer.get_run_progress(run_id)
     if progress:
-        print("Current Progress:")
+        print("📈 TRAINING PROGRESS:")
         print(viewer.format_progress(progress))
-        print(f"Last Updated: {progress.get('last_updated', 'Unknown')}")
+        print(f"📉 Loss: {progress.get('loss', 'N/A')}")
+        print(f"🎯 Learning Rate: {progress.get('learning_rate', 'N/A')}")
+        print(f"🕐 Progress Last Updated: {progress.get('last_updated', 'Unknown')}")
+        print()
         
         if progress.get('estimated_eta_hours'):
             eta = progress['estimated_eta_hours']
@@ -108,20 +139,46 @@ def show_single_run(viewer, run_id):
                 eta_str = f"{int(eta * 60)} minutes"
             else:
                 eta_str = f"{eta:.1f} hours"
-            print(f"Estimated Time Remaining: {eta_str}")
+            print(f"⏳ Estimated Time Remaining: {eta_str}")
         
         # Check if model was uploaded
         if progress.get('model_uploaded'):
             print(f"\n✅ Model uploaded to: {progress.get('model_s3_path', 'Unknown')}")
     else:
-        print("❌ No progress data available")
+        print("❌ No training progress data available")
     
     # Check completion status
     if check_run_completed(viewer, run_id):
-        print("\n✅ Training completed!")
+        print("\n🎉 TRAINING COMPLETED!")
         completion_info = get_completion_info(viewer, run_id)
         if completion_info:
-            print(f"Final metrics: {completion_info}")
+            print(f"📋 Final metrics: {completion_info}")
+    
+    # Check for common issues
+    print("\n🔍 DIAGNOSTIC INFO:")
+    if metadata:
+        phase = metadata.get('phase', 'unknown')
+        status = metadata.get('status', 'unknown')
+        
+        if phase == 'setup' and status == 'running':
+            print("   - Currently in setup phase (downloading models, installing dependencies)")
+            print("   - This can take 15-30 minutes for large models")
+        elif phase == 'data_prep' and status == 'running':
+            print("   - Currently preparing training data")
+            print("   - This can take 30-60 minutes for large datasets")
+        elif phase == 'training' and status == 'running':
+            print("   - Model training is in progress")
+            print("   - This can take 2-6 hours depending on model size")
+        elif status == 'initializing':
+            print("   - Pipeline is starting up")
+        elif phase == 'complete':
+            print("   - Pipeline completed successfully")
+        else:
+            print(f"   - Status: {status}, Phase: {phase}")
+            if status == 'running' and not progress:
+                print("   - ⚠️  Process running but no training metrics - may be stuck in setup")
+    else:
+        print("   - ❌ No diagnostic info available - check if run ID is correct")
 
 
 def watch_run_progress(viewer, run_id, refresh_interval):
@@ -207,15 +264,20 @@ def interactive_mode(viewer, refresh_interval):
 def get_run_metadata(viewer, run_id):
     """Get metadata for a run"""
     import subprocess
-    s3_path = f"s3://{viewer.s3_bucket}/logs/training-runs/{run_id}/metadata.json"
-    cmd = f"aws s3 cp {s3_path} - --region {viewer.region}"
+    # Try both possible S3 paths
+    paths = [
+        f"s3://{viewer.s3_bucket}/training-runs/{run_id}/metadata.json",
+        f"s3://{viewer.s3_bucket}/logs/training-runs/{run_id}/metadata.json"
+    ]
     
-    try:
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        if result.returncode == 0:
-            return json.loads(result.stdout)
-    except Exception:
-        pass
+    for s3_path in paths:
+        cmd = f"aws s3 cp {s3_path} - --region {viewer.region}"
+        try:
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            if result.returncode == 0:
+                return json.loads(result.stdout)
+        except Exception:
+            continue
     
     return None
 

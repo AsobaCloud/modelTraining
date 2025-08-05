@@ -39,7 +39,7 @@ This repository contains Asoba's complete infrastructure for training custom lan
 │   ├── qwen/                    # Qwen model training pipeline
 │   ├── mistral/                 # Mistral model training pipeline  
 │   ├── corpus-generation/       # Domain-specific data collection
-│   └── monitoring/              # Training progress tracking
+│   └── monitoring/              # Production monitoring with alerts
 ├── data/
 │   ├── corpus/                  # Pre-built training datasets
 │   ├── collectors/              # Data processing utilities
@@ -83,7 +83,7 @@ This repository contains Asoba's complete infrastructure for training custom lan
 - **Hardware**: g5.2xlarge minimum for stable training
 - **Specialization**: Policy analysis, multi-domain reasoning
 
-[→ Mistral Training Guide](./scripts/mistral/MISTRAL_TRAINING_GUIDE.md)
+[→ Mistral Training Guide](./scripts/mistral/README.md)
 
 ## Infrastructure
 
@@ -107,15 +107,26 @@ This repository contains Asoba's complete infrastructure for training custom lan
 
 ## Monitoring
 
-Real-time training progress tracking with S3 integration:
+Production-grade monitoring with failure detection and Slack alerts:
 
 ```bash
-# Monitor active training runs
-./scripts/monitoring/monitor_training.py
+# Monitor with alerts (recommended)
+./scripts/monitoring/production_monitor.sh mistral-20250804-171621
 
-# Validate model deployment
-./scripts/monitoring/validate_deployment.py
+# Basic monitoring without alerts
+python3 scripts/monitoring/monitor.py --run-id mistral-20250804-171621
+
+# One-time status check
+python3 scripts/monitoring/monitor.py --run-id mistral-20250804-171621 --once
 ```
+
+**Features:**
+- Silent failure detection with dual heartbeat monitoring
+- Actionable Slack alerts with remediation steps
+- Automatic error capture via S3 sentinels
+- Direct S3 console links for quick debugging
+
+[→ Production Monitoring Guide](./scripts/monitoring/README.md)
 
 ## Development
 

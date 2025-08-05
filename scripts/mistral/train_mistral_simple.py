@@ -14,6 +14,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 import boto3
+import atexit
 
 # Heavy ML imports will be done lazily in functions that need them
 
@@ -25,10 +26,53 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-DEFAULT_MODEL = "mistralai/Mistral-7B-v0.3"
+DEFAULT_MODEL = "/mnt/training/models/mistral-7b-v0.3"
 DEFAULT_S3_BUCKET = "asoba-llm-cache"
 DEFAULT_DATASET_PREFIX = "datasets/mistral-verbosity"
 DEFAULT_MODEL_PREFIX = "models/mistral-verbosity"
+
+# Global variables for error handling
+current_run_id = None
+s3_bucket = None
+monitoring_prefix = "training-runs"
+
+def write_error_sentinel(error_msg: str):
+    """Write error sentinel to S3 for production monitoring"""
+    if current_run_id and s3_bucket:
+        try:
+            s3_client = boto3.client('s3')
+            s3_client.put_object(
+                Bucket=s3_bucket,
+                Key=f"{monitoring_prefix}/{current_run_id}/_error",
+                Body=error_msg
+            )
+            logger.info(f"Error sentinel written to S3: {error_msg}")
+        except Exception as e:
+            logger.warning(f"Failed to write error sentinel: {e}")
+
+def write_completion_marker():
+    """Write completion marker to S3 for production monitoring"""
+    if current_run_id and s3_bucket:
+        try:
+            s3_client = boto3.client('s3')
+            completion_msg = f"Training completed successfully at {datetime.now().isoformat()}"
+            s3_client.put_object(
+                Bucket=s3_bucket,
+                Key=f"{monitoring_prefix}/{current_run_id}/_complete",
+                Body=completion_msg
+            )
+            logger.info("Completion marker written to S3")
+        except Exception as e:
+            logger.warning(f"Failed to write completion marker: {e}")
+
+def handle_error(error_msg: str):
+    """Handle errors with monitoring integration"""
+    write_error_sentinel(error_msg)
+    logger.error(error_msg)
+    sys.exit(1)
+
+# Register completion marker on successful exit
+atexit.register(write_completion_marker)
 
 class MistralTrainer:
     """Simple Mistral trainer following Qwen pattern"""
@@ -77,7 +121,7 @@ def get_training_config(model_name: str, max_seq_length: int = 1024,
     
     # Based on working Qwen configuration - safe, proven values
     config = {
-        "output_dir": "./mistral_simple_output",
+        "output_dir": "/mnt/training/mistral_simple_output",
         "per_device_train_batch_size": min(batch_size, 4),  # Safe for A10G
         "per_device_eval_batch_size": min(batch_size, 4),
         "gradient_accumulation_steps": 4,
@@ -126,18 +170,18 @@ def setup_model_and_tokenizer(model_name: str, use_4bit: bool = True) -> Tuple[A
     else:
         bnb_config = None
     
-    # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    # Load tokenizer from local model directory
+    tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    # Load model
+    # Load model from local model directory
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         quantization_config=bnb_config,
         device_map="auto",
         torch_dtype=torch.bfloat16 if use_4bit else torch.float16,
-        trust_remote_code=True
+        local_files_only=True
     )
     
     # Setup LoRA (proven config from Qwen)
@@ -207,6 +251,8 @@ def preprocess_dataset(examples, tokenizer, max_length: int = 1024):
 
 def main():
     """Main training function"""
+    global current_run_id, s3_bucket
+    
     parser = argparse.ArgumentParser(description="Simple Mistral training")
     parser.add_argument("--train-dataset", required=True,
                        help="S3 path to training dataset")
@@ -214,7 +260,7 @@ def main():
                        help="S3 path to validation dataset")
     parser.add_argument("--model-name", default=DEFAULT_MODEL,
                        help="Model name/path")
-    parser.add_argument("--output-dir", default="./mistral_simple_output",
+    parser.add_argument("--output-dir", default="/mnt/training/mistral_simple_output",
                        help="Output directory")
     parser.add_argument("--s3-bucket", default=DEFAULT_S3_BUCKET,
                        help="S3 bucket for model upload")
@@ -226,8 +272,13 @@ def main():
                        help="Training batch size")
     parser.add_argument("--local-only", action="store_true",
                        help="Skip S3 upload (local training only)")
+    parser.add_argument("--run-id", help="Training run ID for monitoring")
     
     args = parser.parse_args()
+    
+    # Set globals for error handling
+    current_run_id = args.run_id or f"mistral-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    s3_bucket = args.s3_bucket
     
     logger.info("Starting simple Mistral training")
     logger.info(f"Configuration: model={args.model_name}, batch_size={args.batch_size}")
@@ -322,7 +373,8 @@ def main():
         return 0
         
     except Exception as e:
-        logger.error(f"Training failed: {e}")
+        error_msg = f"Training failed: {str(e)}"
+        handle_error(error_msg)
         return 1
 
 if __name__ == "__main__":

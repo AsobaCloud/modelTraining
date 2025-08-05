@@ -98,13 +98,215 @@ class DatasetPipeline:
     
     def get_remaining_stages(self) -> List[str]:
         """Get list of remaining pipeline stages"""
-        all_stages = ["corpus_download", "corpus_processing", "operatives_download", 
-                     "operatives_extraction", "operatives_pdf_processing", 
+        all_stages = ["policy_download", "policy_processing", "corpus_download", "corpus_processing", 
+                     "operatives_download", "operatives_extraction", "operatives_pdf_processing", 
                      "metrics_processing", "dataset_assembly", "dataset_splitting", "s3_upload"]
         return [stage for stage in all_stages if not self.is_stage_complete(stage)]
     
+    def download_policy_folders(self) -> bool:
+        """Download policy data from multiple folders in correct order"""
+        if self.is_stage_complete("policy_download"):
+            logger.info("Policy download stage already complete, skipping")
+            return True
+        
+        try:
+            policy_dir = self.work_dir / "policy"
+            policy_dir.mkdir(exist_ok=True)
+            
+            # Policy folders to download (operatives handled separately)
+            policy_sources = [
+                {
+                    "name": "corpus_federal",
+                    "s3_path": "s3://policy-database/corpus_7-26-2025/federal/",
+                    "includes": ["*.jsonl", "*.json", "*.txt"]
+                },
+                {
+                    "name": "econ_theory", 
+                    "s3_path": "s3://policy-database/econ-theory/",
+                    "includes": ["*.jsonl", "*.json", "*.pdf", "*.txt"],
+                    "excludes": ["processed/*", "failed/*"]
+                },
+                {
+                    "name": "financial_metrics",
+                    "s3_path": "s3://policy-database/financial-metrics/processed/",
+                    "includes": ["*.jsonl", "*.json", "*.txt"]
+                },
+                {
+                    "name": "financial_networks",
+                    "s3_path": "s3://policy-database/financial-networks/",
+                    "includes": ["*.jsonl", "*.json", "*.pdf", "*.txt"],
+                    "excludes": ["processed/*", "failed/*"]
+                },
+                {
+                    "name": "insurance",
+                    "s3_path": "s3://policy-database/insurance/",
+                    "includes": ["*.jsonl", "*.json", "*.pdf", "*.txt"]
+                },
+                {
+                    "name": "news_2025",
+                    "s3_path": "s3://policy-database/news/2025-07-30/",
+                    "includes": ["*.jsonl", "*.json", "*.txt"]
+                },
+                {
+                    "name": "government_officials",
+                    "s3_path": "s3://policy-database/government_officials_roster/",
+                    "includes": ["*.jsonl", "*.json", "*.txt", "*.csv"]
+                }
+            ]
+            
+            for source in policy_sources:
+                logger.info(f"Downloading {source['name']} from {source['s3_path']}")
+                
+                source_dir = policy_dir / source['name']
+                source_dir.mkdir(exist_ok=True)
+                
+                # Build AWS CLI command
+                cmd = [
+                    "aws", "s3", "sync",
+                    source['s3_path'],
+                    str(source_dir),
+                    "--region", "us-east-1",
+                    "--no-progress"
+                ]
+                
+                # Add excludes first (they take precedence)
+                if "excludes" in source:
+                    for exclude in source["excludes"]:
+                        cmd.extend(["--exclude", exclude])
+                
+                # Then add includes
+                cmd.append("--exclude")
+                cmd.append("*")  # Exclude everything first
+                for include in source["includes"]:
+                    cmd.extend(["--include", include])
+                
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+                if result.returncode != 0:
+                    logger.warning(f"Download failed for {source['name']}: {result.stderr}")
+                    continue
+                
+                # Count downloaded files
+                all_files = []
+                for pattern in source["includes"]:
+                    files = list(source_dir.rglob(pattern.replace("*.", "")))
+                    all_files.extend(files)
+                
+                logger.info(f"Downloaded {len(all_files)} files for {source['name']}")
+            
+            self.mark_stage_complete("policy_download")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Policy download failed: {e}")
+            return False
+    
+    def process_policy_data(self) -> Tuple[List[str], int]:
+        """Process policy data and convert to JSONL format"""
+        if self.is_stage_complete("policy_processing"):
+            logger.info("Policy processing already complete")
+            return [], 0
+            
+        try:
+            policy_dir = self.work_dir / "policy"
+            processed_files = []
+            total_entries = 0
+            
+            # Process each policy folder
+            for folder in policy_dir.iterdir():
+                if not folder.is_dir():
+                    continue
+                    
+                logger.info(f"Processing policy folder: {folder.name}")
+                
+                # Create output JSONL file for this folder
+                output_file = self.work_dir / f"policy_{folder.name}.jsonl"
+                folder_entries = 0
+                
+                with open(output_file, 'w', encoding='utf-8') as out_f:
+                    # Process JSONL files directly
+                    for jsonl_file in folder.rglob("*.jsonl"):
+                        logger.info(f"Processing JSONL: {jsonl_file}")
+                        with open(jsonl_file, 'r', encoding='utf-8') as in_f:
+                            for line in in_f:
+                                line = line.strip()
+                                if line:
+                                    out_f.write(line + '\n')
+                                    folder_entries += 1
+                    
+                    # Process JSON files
+                    for json_file in folder.rglob("*.json"):
+                        logger.info(f"Processing JSON: {json_file}")
+                        try:
+                            with open(json_file, 'r', encoding='utf-8') as in_f:
+                                data = json.load(in_f)
+                                if isinstance(data, list):
+                                    for item in data:
+                                        out_f.write(json.dumps(item, ensure_ascii=False) + '\n')
+                                        folder_entries += 1
+                                else:
+                                    out_f.write(json.dumps(data, ensure_ascii=False) + '\n')
+                                    folder_entries += 1
+                        except Exception as e:
+                            logger.warning(f"Failed to process JSON {json_file}: {e}")
+                    
+                    # Process text files
+                    for txt_file in folder.rglob("*.txt"):
+                        logger.info(f"Processing TXT: {txt_file}")
+                        try:
+                            with open(txt_file, 'r', encoding='utf-8') as in_f:
+                                content = in_f.read().strip()
+                                if content:
+                                    # Create JSONL entry for text content
+                                    entry = {
+                                        "domain": "policy_analysis",
+                                        "category": folder.name,
+                                        "source_file": str(txt_file.relative_to(policy_dir)),
+                                        "content": content
+                                    }
+                                    out_f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+                                    folder_entries += 1
+                        except Exception as e:
+                            logger.warning(f"Failed to process TXT {txt_file}: {e}")
+                    
+                    # Process CSV files (for government officials roster)
+                    for csv_file in folder.rglob("*.csv"):
+                        logger.info(f"Processing CSV: {csv_file}")
+                        try:
+                            import csv
+                            with open(csv_file, 'r', encoding='utf-8') as in_f:
+                                reader = csv.DictReader(in_f)
+                                for row in reader:
+                                    entry = {
+                                        "domain": "policy_analysis",
+                                        "category": folder.name,
+                                        "source_file": str(csv_file.relative_to(policy_dir)),
+                                        "data": row
+                                    }
+                                    out_f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+                                    folder_entries += 1
+                        except Exception as e:
+                            logger.warning(f"Failed to process CSV {csv_file}: {e}")
+                
+                if folder_entries > 0:
+                    processed_files.append(str(output_file))
+                    total_entries += folder_entries
+                    logger.info(f"Processed {folder_entries} entries from {folder.name}")
+                else:
+                    # Remove empty file
+                    output_file.unlink(missing_ok=True)
+            
+            logger.info(f"Policy processing complete: {len(processed_files)} files, {total_entries} total entries")
+            self.state["policy_entries"] = total_entries
+            self.mark_stage_complete("policy_processing")
+            
+            return processed_files, total_entries
+            
+        except Exception as e:
+            logger.error(f"Policy processing failed: {e}")
+            return [], 0
+    
     def download_corpus_data(self) -> bool:
-        """Download non-operatives corpus data from S3"""
+        """Download general corpus data from asoba-llm-cache"""
         if self.is_stage_complete("corpus_download"):
             logger.info("Corpus download stage already complete, skipping")
             return True
@@ -347,16 +549,49 @@ def main():
     )
     
     try:
-        # Execute pipeline stages
+        # Execute pipeline stages in correct order
         if not args.skip_download:
+            # 1. Download policy folders first
+            if not pipeline.download_policy_folders():
+                logger.error("Policy download stage failed")
+                return 1
+            
+            # 2. Download general corpus data
+            if not pipeline.download_corpus_data():
+                logger.error("Corpus download stage failed")
+                return 1
+            
+            # 3. Download operatives LAST
             if not pipeline.download_operatives_data():
-                logger.error("Download stage failed")
+                logger.error("Operatives download stage failed")
                 return 1
         
+        # Process policy data
+        logger.info("Processing policy data...")
+        policy_files, policy_count = pipeline.process_policy_data()
+        if policy_count == 0:
+            logger.warning("No policy data processed")
+        
+        # Process corpus data
+        logger.info("Processing corpus data...")
+        corpus_files, corpus_count = pipeline.process_corpus_data()
+        if corpus_count == 0:
+            logger.warning("No corpus data processed")
+        
+        # Extract and process operatives (PDF processing with 50k limit)
         if not pipeline.extract_archives():
             logger.error("Extraction stage failed")
             return 1
         
+        # Calculate remaining quota for operatives (50k total limit)
+        used_entries = policy_count + corpus_count
+        remaining_quota = max(0, args.max_pdfs - used_entries)
+        
+        logger.info(f"Policy entries: {policy_count}")
+        logger.info(f"Corpus entries: {corpus_count}")
+        logger.info(f"Remaining quota for operatives: {remaining_quota}")
+        
+        if remaining_quota > 0:
             # Process PDFs with remaining quota
             operatives_jsonl = Path(args.work_dir) / "operatives.jsonl"
             if not process_pdfs_with_limit(
@@ -371,11 +606,12 @@ def main():
             operatives_jsonl = Path(args.work_dir) / "operatives.jsonl"
             operatives_jsonl.touch()
         
-        # Combine all datasets (corpus + operatives)
+        # Combine all datasets (policy + corpus + operatives)
         combined_file = Path(args.work_dir) / "combined_dataset.jsonl"
         
-        # Combine corpus files and operatives
-        all_files = corpus_files + [str(operatives_jsonl)]
+        # Combine all data sources
+        all_files = policy_files + corpus_files + [str(operatives_jsonl)]
+        logger.info(f"Combining {len(all_files)} dataset files...")
         if not combine_datasets(all_files, str(combined_file)):
             logger.error("Dataset combination failed")
             return 1
