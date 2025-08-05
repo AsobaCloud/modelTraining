@@ -238,13 +238,14 @@ deploy_scripts() {
     scp -o StrictHostKeyChecking=no -i $SSH_KEY \
         scripts/mistral/prepare_mistral_dataset.py \
         scripts/mistral/train_mistral_simple.py \
-        scripts/mistral/shared/dataset_utils.py \
         ubuntu@$INSTANCE_IP:/mnt/training/mistral_training/
     
-    # Create shared directory on EBS volume
+    # Create shared directory and copy shared modules
     ssh -o StrictHostKeyChecking=no -i $SSH_KEY ubuntu@$INSTANCE_IP "mkdir -p /mnt/training/mistral_training/shared"
     scp -o StrictHostKeyChecking=no -i $SSH_KEY \
         scripts/mistral/shared/__init__.py \
+        scripts/mistral/shared/dataset_utils.py \
+        scripts/shared/heartbeat_manager.py \
         ubuntu@$INSTANCE_IP:/mnt/training/mistral_training/shared/
 }
 
@@ -288,7 +289,9 @@ python3 prepare_mistral_dataset.py \
     --output-bucket $S3_BUCKET \
     --output-prefix $DATASET_PREFIX \
     --max-pdfs $MAX_PDFS \
-    --validation-split $VALIDATION_SPLIT
+    --validation-split $VALIDATION_SPLIT \
+    --run-id $RUN_ID \
+    --monitoring-prefix $MONITORING_PREFIX
 
 echo "Data preparation complete!"
 EOF

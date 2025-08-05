@@ -24,6 +24,7 @@ from botocore.config import Config
 # Add shared utilities to path
 sys.path.append(str(Path(__file__).parent))
 from shared.dataset_utils import split_dataset, validate_dataset_format, combine_datasets
+from shared.heartbeat_manager import HeartbeatManager, ProgressTracker
 
 # Configuration
 DEFAULT_BUCKET = "asoba-llm-cache"
@@ -46,13 +47,15 @@ class DatasetPipeline:
     """Mistral dataset preparation pipeline"""
     
     def __init__(self, work_dir: str, s3_bucket: str, s3_prefix: str, 
-                 max_pdfs: int = DEFAULT_MAX_PDFS):
+                 max_pdfs: int = DEFAULT_MAX_PDFS, run_id: str = None, 
+                 monitoring_prefix: str = "training-runs"):
         self.work_dir = Path(work_dir)
         self.work_dir.mkdir(parents=True, exist_ok=True)
         
         self.s3_bucket = s3_bucket
         self.s3_prefix = s3_prefix
         self.max_pdfs = max_pdfs
+        self.run_id = run_id
         
         # Initialize S3 client with retry config
         config = Config(
@@ -60,6 +63,13 @@ class DatasetPipeline:
             max_pool_connections=50
         )
         self.s3_client = boto3.client('s3', config=config)
+        
+        # Initialize heartbeat manager if run_id provided
+        self.heartbeat = None
+        if run_id:
+            s3_key = f"{monitoring_prefix}/{run_id}/metadata.json"
+            self.heartbeat = HeartbeatManager(s3_bucket, s3_key, interval_seconds=180)
+            logger.info(f"Heartbeat monitoring enabled for run: {run_id}")
         
         # Pipeline state tracking
         self.state_file = self.work_dir / "pipeline_state.json"
@@ -109,6 +119,10 @@ class DatasetPipeline:
             logger.info("Policy download stage already complete, skipping")
             return True
         
+        # Update heartbeat phase
+        if self.heartbeat:
+            self.heartbeat.update_phase("data_prep", "downloading_policy", "initializing")
+        
         try:
             policy_dir = self.work_dir / "policy"
             policy_dir.mkdir(exist_ok=True)
@@ -151,16 +165,39 @@ class DatasetPipeline:
                     "name": "government_officials",
                     "s3_path": "s3://policy-database/government_officials_roster/",
                     "includes": ["*.jsonl", "*.json", "*.txt", "*.csv"]
+                },
+                {
+                    "name": "congressional_research",
+                    "s3_path": "s3://policy-database/usa/congressional-research/",
+                    "includes": ["*.jsonl", "*.json", "*.pdf", "*.txt", "*.csv"]
                 }
             ]
             
-            for source in policy_sources:
+            # Initialize progress tracking
+            if self.heartbeat:
+                self.heartbeat.update_progress(
+                    policy_sources_total=len(policy_sources),
+                    policy_sources_completed=0,
+                    current_source="",
+                    files_downloaded=0
+                )
+            
+            total_files = 0
+            for i, source in enumerate(policy_sources):
                 logger.info(f"Downloading {source['name']} from {source['s3_path']}")
+                
+                # Update heartbeat with current source
+                if self.heartbeat:
+                    self.heartbeat.update_phase("data_prep", "downloading_policy", source['name'])
+                    self.heartbeat.update_progress(
+                        policy_sources_completed=i,
+                        current_source=source['name']
+                    )
                 
                 source_dir = policy_dir / source['name']
                 source_dir.mkdir(exist_ok=True)
                 
-                # Build AWS CLI command
+                # Build AWS CLI command - sync is recursive by default
                 cmd = [
                     "aws", "s3", "sync",
                     source['s3_path'],
@@ -188,10 +225,19 @@ class DatasetPipeline:
                 # Count downloaded files
                 all_files = []
                 for pattern in source["includes"]:
-                    files = list(source_dir.rglob(pattern.replace("*.", "")))
+                    files = list(source_dir.rglob(pattern))
                     all_files.extend(files)
                 
+                total_files += len(all_files)
                 logger.info(f"Downloaded {len(all_files)} files for {source['name']}")
+                
+                # Update heartbeat with progress
+                if self.heartbeat:
+                    self.heartbeat.update_progress(
+                        policy_sources_completed=i + 1,
+                        files_downloaded=total_files,
+                        last_completed_source=source['name']
+                    )
             
             self.mark_stage_complete("policy_download")
             return True
@@ -317,13 +363,11 @@ class DatasetPipeline:
             
             logger.info("Downloading corpus data from S3...")
             
-            # Download all JSONL corpus files
+            # Download all corpus files recursively
             cmd = [
                 "aws", "s3", "sync", 
                 f"s3://{self.s3_bucket}/corpus/",
                 str(corpus_dir),
-                "--exclude", "*",
-                "--include", "*.jsonl",
                 "--region", "us-east-1",
                 "--no-progress"
             ]
@@ -378,20 +422,21 @@ class DatasetPipeline:
             logger.info("Operatives download stage already complete, skipping")
             return True
         
+        # Update heartbeat phase
+        if self.heartbeat:
+            self.heartbeat.update_phase("data_prep", "downloading_operatives", "archives")
+        
         try:
             operatives_dir = self.work_dir / "operatives"
             operatives_dir.mkdir(exist_ok=True)
             
             logger.info("Downloading operatives archives from S3...")
             
-            # Download archives with AWS CLI for reliability
+            # Download archives with AWS CLI for reliability - recursive by default
             cmd = [
                 "aws", "s3", "sync", 
                 "s3://policy-database/operatives/",
                 str(operatives_dir),
-                "--exclude", "*",
-                "--include", "*.zip",
-                "--include", "*.tar.gz",
                 "--region", "us-east-1",
                 "--no-progress"
             ]
@@ -422,11 +467,22 @@ class DatasetPipeline:
             logger.info("Operatives extraction stage already complete, skipping")
             return True
         
+        # Update heartbeat phase
+        if self.heartbeat:
+            self.heartbeat.update_phase("data_prep", "extracting_archives", "operatives")
+        
         try:
             operatives_dir = self.work_dir / "operatives"
             
             archive_files = list(operatives_dir.glob("*.zip")) + list(operatives_dir.glob("*.tar.gz"))
             logger.info(f"Extracting {len(archive_files)} archives...")
+            
+            # Initialize progress tracking
+            if self.heartbeat:
+                self.heartbeat.update_progress(
+                    archives_total=len(archive_files),
+                    archives_extracted=0
+                )
             
             extracted_count = 0
             for archive_file in archive_files:
@@ -439,8 +495,12 @@ class DatasetPipeline:
                                      check=True, timeout=300)
                     
                     extracted_count += 1
+                    
+                    # Update progress every 10 archives
                     if extracted_count % 10 == 0:
                         logger.info(f"Extracted {extracted_count}/{len(archive_files)} archives")
+                        if self.heartbeat:
+                            self.heartbeat.update_progress(archives_extracted=extracted_count)
                         
                 except subprocess.TimeoutExpired:
                     logger.warning(f"Extraction timeout for {archive_file}")
@@ -534,19 +594,30 @@ def main():
                        help="Validation split ratio")
     parser.add_argument("--skip-download", action="store_true",
                        help="Skip download stage (use existing data)")
+    parser.add_argument("--run-id", 
+                       help="Run ID for monitoring integration")
+    parser.add_argument("--monitoring-prefix", default="training-runs",
+                       help="S3 prefix for monitoring data")
     
     args = parser.parse_args()
     
     logger.info("Starting Mistral dataset preparation pipeline")
     logger.info(f"Configuration: max_pdfs={args.max_pdfs}, val_split={args.validation_split}")
     
-    # Initialize pipeline
+    # Initialize pipeline with monitoring
     pipeline = DatasetPipeline(
         work_dir=args.work_dir,
         s3_bucket=args.output_bucket,
         s3_prefix=args.output_prefix,
-        max_pdfs=args.max_pdfs
+        max_pdfs=args.max_pdfs,
+        run_id=args.run_id,
+        monitoring_prefix=args.monitoring_prefix
     )
+    
+    # Start heartbeat monitoring if enabled
+    if pipeline.heartbeat:
+        pipeline.heartbeat.start()
+        pipeline.heartbeat.update_phase("data_prep", "initializing", "pipeline_setup")
     
     try:
         # Execute pipeline stages in correct order
@@ -639,6 +710,9 @@ def main():
             return 1
         
         # Upload to S3
+        if pipeline.heartbeat:
+            pipeline.heartbeat.update_phase("data_prep", "uploading", "datasets_to_s3")
+            
         if not upload_datasets_to_s3(
             train_file=str(train_file),
             val_file=str(val_file),
@@ -646,7 +720,16 @@ def main():
             s3_prefix=args.output_prefix
         ):
             logger.error("S3 upload failed")
+            if pipeline.heartbeat:
+                pipeline.heartbeat.set_status("failed")
+                pipeline.heartbeat.stop()
             return 1
+        
+        # Mark as completed
+        if pipeline.heartbeat:
+            pipeline.heartbeat.update_phase("data_prep", "completed", "success")
+            pipeline.heartbeat.set_status("completed")
+            pipeline.heartbeat.stop()
         
         logger.info("✅ Dataset preparation pipeline completed successfully!")
         logger.info(f"Datasets available at: s3://{args.output_bucket}/{args.output_prefix}/")
@@ -654,6 +737,10 @@ def main():
         
     except Exception as e:
         logger.error(f"Pipeline failed: {e}")
+        if pipeline.heartbeat:
+            pipeline.heartbeat.set_status("failed")
+            pipeline.heartbeat.update_phase("data_prep", "error", str(e))
+            pipeline.heartbeat.stop()
         return 1
 
 if __name__ == "__main__":
