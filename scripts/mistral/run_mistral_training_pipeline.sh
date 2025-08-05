@@ -35,6 +35,8 @@ update_s3_status() {
   "phase": "$phase",
   "last_update": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "instance_type": "$INSTANCE_TYPE",
+  "instance_id": "${INSTANCE_ID:-unknown}",
+  "instance_ip": "${INSTANCE_IP:-unknown}",
   "region": "$REGION",
   "details": "$details"
 }
@@ -182,6 +184,7 @@ launch_instance() {
         sleep 5
     done
     
+    export INSTANCE_ID
     export INSTANCE_IP=$PUBLIC_IP
     export SSH_KEY=~/.ssh/$KEY_NAME.pem
 }
@@ -577,6 +580,10 @@ EOF_META
     if [[ "$USE_EXISTING_INSTANCE" == "true" ]]; then
         log "Using existing instance: $INSTANCE_ID"
         log "Instance IP: $INSTANCE_IP"
+        
+        # Export for global use
+        export INSTANCE_ID
+        export INSTANCE_IP
         
         # Verify instance is running
         INSTANCE_STATE=$(aws ec2 describe-instances \

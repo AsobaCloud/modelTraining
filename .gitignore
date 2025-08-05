@@ -1,0 +1,79 @@
+# Environment and secrets
+.env
+.env.*
+!.env.template
+!.env.example
+
+# SSH Keys
+*.pem
+*.key
+*.pub
+id_rsa*
+id_ed25519*
+
+# AWS
+.aws/
+aws_credentials
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+*.egg-info/
+.pytest_cache/
+
+# Instance IDs and IPs
+.*-instance-id
+.*-instance-ip
+.*-ip
+
+# Logs
+*.log
+logs/
+training.log
+monitor.log
+
+# Model files
+*.bin
+*.safetensors
+*.h5
+*.pkl
+*.pth
+*.ckpt
+
+# Data
+*.jsonl
+*.csv
+datasets/
+data/
+corpus/
+
+# Jupyter
+.ipynb_checkpoints
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Zone Identifier files (Windows)
+*:Zone.Identifier

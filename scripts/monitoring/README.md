@@ -122,9 +122,26 @@ export STALE_MINUTES=10
 ### Slack Webhook Setup
 
 1. Create an Incoming Webhook in your Slack workspace
-2. Update `production_monitor.sh` with your webhook URL:
+2. Set up your webhook URL using one of these methods:
+
+   **Option 1: Environment File (Recommended)**
    ```bash
-   SLACK_WEBHOOK="https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+   cp .env.example .env
+   # Edit .env and add your webhook:
+   SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+   ```
+
+   **Option 2: Environment Variable**
+   ```bash
+   export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+   ./scripts/monitoring/production_monitor.sh mistral-20250804-171621
+   ```
+
+   **Option 3: Pass directly to monitor.py**
+   ```bash
+   python3 scripts/monitoring/monitor.py \
+     --run-id mistral-20250804-171621 \
+     --slack-webhook "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
    ```
 
 ### SNS Integration (Alternative to Slack)
