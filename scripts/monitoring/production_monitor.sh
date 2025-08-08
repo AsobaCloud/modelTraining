@@ -33,18 +33,18 @@ if [ $# -eq 0 ]; then
     echo "Usage: $0 <run-id> [options]"
     echo ""
     echo "Examples:"
-    echo "  $0 mistral-20250804-171621                    # Single check"
-    echo "  $0 mistral-20250804-171621 --watch            # Continuous monitoring"
-    echo "  $0 mistral-20250804-171621 --watch --interval 30  # Custom interval"
+    echo "  $0 mistral-20250804-171621                    # Continuous monitoring (default)"
+    echo "  $0 mistral-20250804-171621 --once             # Single check"
+    echo "  $0 mistral-20250804-171621 --interval 30      # Custom interval"
     exit 1
 fi
 
 RUN_ID="$1"
 shift
 
-# Default to continuous monitoring if no options provided
+# Default to continuous monitoring with 60s interval if no options provided
 if [ $# -eq 0 ]; then
-    set -- --watch --interval 60
+    set -- --interval 60
 fi
 
 echo "🚀 Starting production monitoring for: $RUN_ID"

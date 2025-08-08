@@ -1,0 +1,31 @@
+Mistral Training Instance Information
+====================================
+Run ID: mistral-20250808-163616
+Instance ID: i-0645c6db622720234
+Public IP: 54.201.148.49
+SSH Key: /home/shingai/sort/llm-training/config/mistral-base.pem
+Region: us-west-2
+
+SSH Access:
+ssh -i /home/shingai/sort/llm-training/config/mistral-base.pem ubuntu@54.201.148.49
+
+Monitor Training Locally:
+ssh -i /home/shingai/sort/llm-training/config/mistral-base.pem ubuntu@54.201.148.49 "cd /mnt/training/mistral_training && ./monitor_training.sh"
+
+View Logs:
+ssh -i /home/shingai/sort/llm-training/config/mistral-base.pem ubuntu@54.201.148.49 "cd /mnt/training/mistral_training && tail -f training.log"
+
+Monitor from S3 (no SSH needed):
+python3 scripts/monitoring/monitor_training.py --run-id mistral-20250808-163616 --watch
+
+S3 Monitoring URL:
+https://console.aws.amazon.com/s3/buckets/asoba-llm-cache/training-runs/mistral-20250808-163616/
+
+Stop Instance (when done):
+aws ec2 stop-instances --instance-ids i-0645c6db622720234 --region us-west-2
+
+Terminate Instance (cleanup):
+aws ec2 terminate-instances --instance-ids i-0645c6db622720234 --region us-west-2
+
+Pipeline Log:
+cat mistral_pipeline_mistral-20250808-163616.log

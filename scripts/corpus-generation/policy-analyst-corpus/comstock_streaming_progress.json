@@ -1,0 +1,16 @@
+{
+  "phase_1_completed": false,
+  "phase_2_states_completed": [],
+  "phase_3_completed": false,
+  "root_files_processed": [
+    "data_dictionary.tsv",
+    "enumeration_dictionary.tsv",
+    "measure_name_crosswalk.csv",
+    "upgrades_lookup.json",
+    "batch_state.json"
+  ],
+  "metadata_aggregates_processed": [],
+  "individual_buildings_processed": [],
+  "total_records": 1512,
+  "last_updated": "2025-08-08T09:55:12.662023"
+}

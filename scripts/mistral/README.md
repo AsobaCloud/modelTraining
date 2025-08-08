@@ -13,17 +13,27 @@ The Mistral pipeline implements a complete training workflow with:
 
 ## Quick Start
 
+### Current Dataset Status (Ready for Training)
+
+**Instance**: i-01fa5b57d64c6196a (54.197.142.172)  
+**Datasets**: ✅ Ready and validated
+- **Training**: `/mnt/training/data_prep/final_train.jsonl` (41,294 entries)
+- **Validation**: `/mnt/training/data_prep/final_val.jsonl` (10,323 entries)  
+- **Total**: 51,617 entries (50k operatives + 1,617 clean policy data)
+- **Status**: All datasets pass validation with required 'text' fields
+
 ### One-Shot Training (Recommended)
 
 ```bash
 # Launch new instance and run complete pipeline
 ./scripts/mistral/run_mistral_training_pipeline.sh
 
-# Use existing g5.2xlarge instance
+# Use existing g5.2xlarge instance (CURRENT SETUP)
 ./scripts/mistral/run_mistral_training_pipeline.sh \
   --instance-id i-01fa5b57d64c6196a \
   --instance-ip 54.197.142.172 \
-  --ssh-key config/mistral-base.pem
+  --ssh-key config/mistral-base.pem \
+  --use-existing-data  # Use prepared datasets
 ```
 
 ### Monitor Training
@@ -40,27 +50,32 @@ python3 scripts/monitoring/monitor.py --run-id mistral-20250804-171621 --watch
 
 ### Phase 1: Data Collection
 
-**Script**: `prepare_mistral_dataset.py`
+**Script**: `prepare_mistral_dataset.py` + `regenerate_policy_data.py`
 
-Downloads and processes data from 7 policy domains with operatives loaded LAST:
+Downloads and processes data from 8 policy domains with operatives loaded LAST:
 
 ```python
 policy_sources = [
-    {"name": "corpus_federal", "s3_path": "s3://policy-database/corpus_7-26-2025/federal/"},
     {"name": "econ_theory", "s3_path": "s3://policy-database/econ-theory/"},
     {"name": "financial_metrics", "s3_path": "s3://policy-database/financial-metrics/"},
-    {"name": "healthcare_policy", "s3_path": "s3://policy-database/healthcare-policy/"},
-    {"name": "operational_data", "s3_path": "s3://policy-database/operational-data/"},
-    {"name": "regulatory_compliance", "s3_path": "s3://policy-database/regulatory-compliance/"},
-    {"name": "operatives", "s3_path": "s3://policy-database/operatives/", "max_files": 50000}
+    {"name": "government_officials", "s3_path": "s3://policy-database/government-officials/"},
+    {"name": "international_relations", "s3_path": "s3://policy-database/international-relations/"},
+    {"name": "national_security", "s3_path": "s3://policy-database/national-security/"},
+    {"name": "policy_debate", "s3_path": "s3://policy-database/policy-debate/"},
+    {"name": "public_welfare", "s3_path": "s3://policy-database/public-welfare/"},
+    {"name": "behavioral_economics", "s3_path": "s3://policy-database/behavioral-economics/"},
+    {"name": "operatives", "s3_path": "s3://operatives-datasets/", "max_files": 50000}
 ]
 ```
 
-**Features**:
-- Processes JSON, JSONL, TXT, CSV files
+**Data Integrity Features**:
+- **Clean Data Processing**: Excludes `processed/` and `failed/` folders (except financial-metrics/processed)
+- **Garbage Prevention**: Excludes `behavioral-economics/news/` folder containing non-policy content
+- **Validation**: All entries require 'text' field with actual content
+- Processes JSON, JSONL, TXT, PDF files
 - Smart deduplication by content hash
 - 80/20 train/validation split
-- Outputs to S3: `s3://asoba-llm-cache/datasets/mistral-verbosity/`
+- **Final Dataset**: 51,617 entries (50k operatives + 1,617 policy) that pass validation
 
 ### Phase 2: Model Training
 
@@ -257,6 +272,69 @@ Last Log: RuntimeError: CUDA out of memory. Tried to allocate 2.00 GiB
 - **Region**: us-east-1
 - **Time**: ~30min setup, 2-4 hours training
 
+## Data Validation & Quality Assurance
+
+### Recent Issues Fixed
+
+#### Logger Crash During Data Preparation
+**Problem**: Pipeline crashed with "NameError: name 'logger' is not defined" during PyPDF2 import fallback
+**Root Cause**: Logger was used in except block before being initialized
+**Solution**: Moved logging setup before all imports in `regenerate_policy_data.py`
+
+#### Training Configuration Drift
+**Problem**: Multiple config mismatches causing OOM and false success markers
+**Root Cause**: Hardcoded values overriding CLI args, dtype mismatches, premature completion markers
+**Solutions**:
+- Honor `--batch-size` and `--max-seq-length` CLI arguments
+- Switch to bf16 throughout (matches Ampere GPU + model dtype)
+- Write completion markers only on actual success
+- Make heartbeat imports optional
+
+#### Monitoring Script Argument Errors
+**Problem**: `monitor.py: error: unrecognized arguments: --watch`
+**Root Cause**: Production monitor wrapper passed unsupported --watch flag
+**Solution**: Updated `production_monitor.sh` to use supported arguments (--interval 60)
+
+#### Data Source Updates
+**Current Sources**: Updated to reflect actual S3 bucket structure
+- **USA Policy**: `s3://policy-database/usa/`
+- **South Africa**: `s3://policy-database/south_africa/`
+- **Economic Theory**: `s3://policy-database/econ-theory/`
+- **Federal Bills**: `s3://policy-database/corpus_7-26-2025/federal/content/`
+- **Insurance**: `s3://policy-database/insurance/`
+- **Financial Metrics**: `s3://policy-database/financial-metrics/processed/` (processed folder included)
+- **Recent News**: `s3://policy-database/news/2025-07-30/`
+- **Operatives**: `s3://policy-database/operatives/` (50+ classified collections)
+
+#### Data Processing Improvements
+**Script**: `regenerate_policy_data.py`
+```bash
+# Usage on EC2 instance:
+python3 regenerate_policy_data.py --work-dir /mnt/training/data_prep
+```
+
+**Enhancements**:
+- Global SHA1 hash-based deduplication across all sources
+- Proper exclusion of processed/failed folders (except financial-metrics)
+- Systematic text field validation
+- Support for PDF extraction (first 5 pages)
+- Detailed logging of duplicates and processing statistics
+
+### Dataset Validation Commands
+
+```bash
+# Validate individual datasets
+cd /mnt/training/mistral_training
+python3 -c "from shared.dataset_utils import validate_dataset_format; print(validate_dataset_format('/path/to/dataset.jsonl'))"
+
+# Check dataset sizes and content
+wc -l /mnt/training/data_prep/final_*.jsonl
+head -1 /mnt/training/data_prep/final_train.jsonl | jq .
+
+# Verify no garbage content
+grep -i "workout\|aluminum\|news" /mnt/training/data_prep/final_*.jsonl || echo "✅ No garbage content found"
+```
+
 ## Troubleshooting
 
 ### Common Issues
@@ -274,6 +352,11 @@ Last Log: RuntimeError: CUDA out of memory. Tried to allocate 2.00 GiB
    - Check S3 bucket permissions
    - Verify policy folders exist
    - Ensure sufficient EBS space
+
+4. **Dataset Validation Failures** (NEW)
+   - Use `regenerate_policy_data.py` for clean data processing
+   - Verify all entries have required 'text' field
+   - Check for excluded processed/failed folders
 
 ### Debug Commands
 
@@ -337,3 +420,34 @@ SLACK_WEBHOOK="https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
 3. **Check datasets exist** - Pipeline skips data prep if datasets found
 4. **Use existing instances** - Saves time and preserves state
 5. **Review alerts promptly** - Quick action prevents wasted GPU time
+
+## Memory Optimization (CRITICAL)
+
+### OOM Prevention During Tokenization
+
+The training script has been optimized to prevent OOM kills on g5.4xlarge (64GB RAM):
+
+#### Problem
+Training would get OOM killed at ~53% tokenization, using 27.8GB RAM because:
+- Effective batch size was too large: `4 batch_size × 1024 seq_len = 4096 sequence batch`
+- This exceeded memory capacity during tokenization phase
+
+#### Solution (Official Mistral Best Practice)
+Following official mistral-finetune repository guidance for CUDA OOM:
+
+1. **Reduce batch size**: `per_device_train_batch_size=1` (was 4)
+2. **Reduce sequence length**: `max_seq_length=512` (was 1024)
+3. **Increase gradient accumulation**: `gradient_accumulation_steps=16` (was 4)
+4. **Net effect**: Sequence batch reduced from 4096 to 512 (8x reduction)
+
+**Source**: "If you encounter a CUDA out-of-memory error, one possible solution is to reduce the batch size per GPU. The batch size is equal to seq_len x batch_size." - Official Mistral docs
+
+### Official Mistral Configuration
+
+- **Dataset**: 89,948 training + 10,323 validation entries (normalized)
+- **Instance**: g5.4xlarge (64GB RAM, 24GB GPU)
+- **Batch size**: 1 (official Mistral OOM fix)
+- **Sequence length**: 512 tokens (official Mistral OOM fix)  
+- **Gradient accumulation**: 16 steps (maintains effective batch size)
+- **Effective batch**: 1 × 512 = 512 (vs previous 4096)
+- **Expected result**: 8x reduction in memory usage during tokenization

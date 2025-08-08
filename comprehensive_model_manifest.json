@@ -1,0 +1,97 @@
+{
+  "deployment_date": "2025-07-23T15:45:00Z",
+  "base_models": {
+    "mistral": "mistralai/Mistral-7B-v0.3",
+    "qwen": "Qwen/Qwen3-14B"
+  },
+  "models": {
+    "mistral_policy_analysis": {
+      "path": "models/mistral-7b-specialized/policy-analysis/mistral-policy-qlora.tar.gz",
+      "size_mb": 298,
+      "training_epochs": 3,
+      "training_loss": 0.45,
+      "port": 8001,
+      "bootstrap_script": "bootstrap_mistral_deployment.sh",
+      "ami_id": "ami-0a39335458731538a",
+      "instance_types": ["g4dn.xlarge", "g5.2xlarge"],
+      "endpoints": ["/analyze", "/analyze/economic", "/analyze/regulatory", "/analyze/social", "/analyze/environmental", "/analyze/international"]
+    },
+    "mistral_iac_generation": {
+      "path": "models/mistral-7b-specialized/iac-generation/mistral-iac-qlora.tar.gz", 
+      "size_mb": 297,
+      "port": 8000,
+      "bootstrap_script": "bootstrap_mistral_deployment.sh",
+      "ami_id": "ami-0a39335458731538a",
+      "instance_types": ["g4dn.xlarge", "g5.2xlarge"],
+      "endpoints": ["/generate/iac", "/generate/terraform", "/generate/kubernetes", "/generate/docker"]
+    },
+    "qwen_claude_md": {
+      "path": "models/Qwen/Qwen3-14B",
+      "size_gb": 14,
+      "port": 8001,
+      "bootstrap_script": "bootstrap_qwen_claude_deployment.sh",
+      "ami_id": "ami-0a39335458731538a",
+      "instance_types": ["g5.2xlarge", "g5.4xlarge", "g5.8xlarge"],
+      "recommended_instance": "g5.2xlarge",
+      "default_instance": "g5.4xlarge",
+      "endpoints": ["/generate", "/health", "/docs"],
+      "special_features": ["CLAUDE.md methodology integration", "14B parameter model", "Configurable instance size"]
+    }
+  },
+  "unified_deployments": {
+    "mistral_dual": {
+      "description": "IaC + Policy Analysis on single instance",
+      "models": ["mistral_iac_generation", "mistral_policy_analysis"],
+      "memory_efficiency": "60% savings vs separate instances",
+      "gpu_utilization": "35.8% (both models)",
+      "instance_type": "g5.2xlarge",
+      "ports": [8000, 8001]
+    }
+  },
+  "bootstrap_instructions": {
+    "mistral_models": {
+      "user_data_script": "mistral_ami_user_data.sh",
+      "manual_bootstrap": "bootstrap_mistral_deployment.sh",
+      "auto_deployment": true,
+      "setup_time_minutes": 10
+    },
+    "qwen_model": {
+      "deployment_script": "bootstrap_qwen_claude_deployment.sh",
+      "auto_deployment": false,
+      "setup_time_minutes": 15,
+      "manual_steps_required": true
+    }
+  },
+  "s3_structure": {
+    "base_bucket": "s3://asoba-llm-cache",
+    "scripts_path": "scripts/",
+    "models_path": "models/",
+    "available_scripts": [
+      "bootstrap_mistral_deployment.sh",
+      "bootstrap_qwen_claude_deployment.sh", 
+      "mistral_ami_user_data.sh",
+      "policy_analysis_inference_server.py",
+      "iac_inference_server.py",
+      "qwen_inference_server.py",
+      "qwen_config.json",
+      "qwen_claude_md_system_prompt.txt"
+    ]
+  },
+  "deployment_patterns": {
+    "single_model": {
+      "description": "One specialized model per instance",
+      "use_cases": ["high throughput", "dedicated workloads"],
+      "cost_efficiency": "standard"
+    },
+    "unified_mistral": {
+      "description": "IaC + Policy models sharing base Mistral",
+      "use_cases": ["multi-purpose AI workstation", "cost optimization"],
+      "cost_efficiency": "60% savings"
+    },
+    "qwen_standalone": {
+      "description": "Qwen 14B with CLAUDE.md methodology",
+      "use_cases": ["complex reasoning", "code generation with methodology"],
+      "cost_efficiency": "premium (larger model)"
+    }
+  }
+}

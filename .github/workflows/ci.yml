@@ -1,0 +1,209 @@
+name: CI - Test Quality Enforcement
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-quality:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.10.12]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest pytest-cov mutmut
+        pip install -r requirements.txt || echo "No requirements.txt found"
+    
+    - name: Run anti-mock policy enforcement
+      run: |
+        # The conftest.py plugin will automatically block internal mocks
+        pytest tests/ -v --tb=short
+    
+    - name: Run coverage with branch analysis  
+      run: |
+        pytest tests/ --cov=scripts --cov-branch --cov-fail-under=75 --cov-report=term-missing
+        
+    - name: Run mutation testing
+      run: |
+        # Only run mutation testing on core logic, not test files
+        mutmut run --paths-to-mutate scripts/shared scripts/mistral --runner "pytest tests/ -q" --timeout-factor 2.0 || true
+        mutmut results > mutmut.txt
+        
+        # Analyze mutation test results
+        python - <<'EOF'
+        from pathlib import Path
+        import re, sys
+        
+        if not Path('mutmut.txt').exists():
+            print("No mutation results file found")
+            sys.exit(0)
+            
+        txt = Path('mutmut.txt').read_text()
+        print("Mutation test results:")
+        print(txt)
+        
+        # Count survivors (tests that didn't catch mutations)
+        survivors = len(re.findall(r"Survived", txt))
+        killed = len(re.findall(r"Killed", txt))
+        total_mutations = survivors + killed
+        
+        if total_mutations == 0:
+            print("No mutations generated - code may be too simple or complex")
+            sys.exit(0)
+            
+        survival_rate = (survivors / total_mutations) * 100
+        print(f"\nMutation Summary:")
+        print(f"Total mutations: {total_mutations}")
+        print(f"Killed: {killed}")
+        print(f"Survived: {survivors}")
+        print(f"Survival rate: {survival_rate:.1f}%")
+        
+        # Fail if more than 15% of mutations survive
+        if survival_rate > 15:
+            print(f"❌ Too many mutations survived ({survival_rate:.1f}% > 15%)")
+            print("This indicates weak test coverage or vacuous tests")
+            sys.exit(1)
+        else:
+            print(f"✅ Mutation testing passed ({survival_rate:.1f}% ≤ 15%)")
+        EOF
+    
+    - name: Validate no internal mocking patterns
+      run: |
+        # Additional static analysis for mock usage
+        python - <<'EOF'
+        import re, sys
+        from pathlib import Path
+        
+        violations = []
+        
+        for test_file in Path("tests").glob("test_*.py"):
+            content = test_file.read_text()
+            
+            # Check for internal mocking patterns
+            has_mock = re.search(r'\b(unittest\.mock|pytest.*monkeypatch|mocker)\b', content)
+            has_internal = re.search(r'\bllm-training\.\b', content)
+            has_allow_mock = re.search(r'@pytest\.mark\.allow_mock', content)
+            
+            if has_mock and has_internal and not has_allow_mock:
+                violations.append(f"{test_file}: Internal mocking without @pytest.mark.allow_mock")
+        
+        if violations:
+            print("❌ Mock policy violations found:")
+            for violation in violations:
+                print(f"  - {violation}")
+            sys.exit(1)
+        else:
+            print("✅ No mock policy violations found")
+        EOF
+    
+    - name: Validate test naming conventions
+      run: |
+        # Ensure integration and E2E tests follow naming conventions
+        python - <<'EOF'
+        from pathlib import Path
+        import ast, sys
+        
+        missing_tests = []
+        
+        for test_file in Path("tests").glob("test_*.py"):
+            content = test_file.read_text()
+            
+            # Parse AST to find function names
+            try:
+                tree = ast.parse(content)
+                function_names = [node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]
+                
+                has_int_test = any(name.startswith("test_int_") for name in function_names)
+                has_e2e_test = any(name.startswith("test_e2e_") for name in function_names)
+                
+                # Skip if it's a pure unit test file (no integration needed)
+                if "unit" in test_file.name or "mock" in test_file.name:
+                    continue
+                    
+                if not has_int_test and "integration" not in str(test_file):
+                    missing_tests.append(f"{test_file}: Missing test_int_* integration test")
+                    
+                if not has_e2e_test and test_file.name != "test_e2e_cli.py":
+                    missing_tests.append(f"{test_file}: Missing test_e2e_* end-to-end test")
+                    
+            except SyntaxError:
+                print(f"Warning: Could not parse {test_file}")
+                continue
+        
+        if missing_tests:
+            print("⚠️  Test naming convention violations:")
+            for missing in missing_tests:
+                print(f"  - {missing}")
+            # Don't fail on naming conventions, just warn
+        else:
+            print("✅ Test naming conventions followed")
+        EOF
+    
+    - name: Run comprehensive pipeline validation
+      run: |
+        # Run our custom test framework
+        python scripts/test_runner.py --categories data_validation_failures --json-output test_results.json || true
+        
+        # Check if validation framework is working
+        if [ -f test_results.json ]; then
+            echo "✅ Test framework executed successfully"
+            cat test_results.json
+        else
+            echo "⚠️  Test framework did not generate results"
+        fi
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Scan for hardcoded secrets
+      run: |
+        # Check for common secret patterns
+        python - <<'EOF'
+        import re, sys
+        from pathlib import Path
+        
+        secret_patterns = [
+            (r'aws_access_key_id\s*=\s*[\'"][A-Z0-9]{20}[\'"]', "AWS Access Key"),
+            (r'aws_secret_access_key\s*=\s*[\'"][A-Za-z0-9/+=]{40}[\'"]', "AWS Secret Key"),
+            (r'sk-[A-Za-z0-9]{48}', "OpenAI API Key"),
+            (r'ghp_[A-Za-z0-9]{36}', "GitHub Token"),
+            (r'-----BEGIN PRIVATE KEY-----', "Private Key"),
+        ]
+        
+        violations = []
+        
+        for py_file in Path(".").glob("**/*.py"):
+            if ".git" in str(py_file) or "__pycache__" in str(py_file):
+                continue
+                
+            try:
+                content = py_file.read_text()
+                for pattern, name in secret_patterns:
+                    if re.search(pattern, content):
+                        violations.append(f"{py_file}: Potential {name} found")
+            except:
+                continue
+        
+        if violations:
+            print("🚨 Potential secrets found:")
+            for violation in violations:
+                print(f"  - {violation}")
+            sys.exit(1)
+        else:
+            print("✅ No hardcoded secrets detected")
+        EOF

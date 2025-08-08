@@ -1,0 +1,117 @@
+{
+  "model_name": "Qwen/Qwen3-14B",
+  "cache_location": "s3://asoba-llm-cache/models/Qwen/Qwen3-14B",
+  "cached_date": "2025-07-23T06:34:45.091507",
+  "complete": true,
+  "total_files": 17,
+  "total_size_mb": 28180.976135253906,
+  "files": [
+    {
+      "filename": ".gitattributes",
+      "s3_key": "models/Qwen/Qwen3-14B/.gitattributes",
+      "size": 227,
+      "last_modified": "2025-07-23 10:32:13+00:00"
+    },
+    {
+      "filename": "README.md",
+      "s3_key": "models/Qwen/Qwen3-14B/README.md",
+      "size": 6277,
+      "last_modified": "2025-07-23 10:32:13+00:00"
+    },
+    {
+      "filename": "config.json",
+      "s3_key": "models/Qwen/Qwen3-14B/config.json",
+      "size": 728,
+      "last_modified": "2025-07-23 10:32:14+00:00"
+    },
+    {
+      "filename": "generation_config.json",
+      "s3_key": "models/Qwen/Qwen3-14B/generation_config.json",
+      "size": 239,
+      "last_modified": "2025-07-23 10:32:14+00:00"
+    },
+    {
+      "filename": "merges.txt",
+      "s3_key": "models/Qwen/Qwen3-14B/merges.txt",
+      "size": 715087,
+      "last_modified": "2025-07-23 10:32:15+00:00"
+    },
+    {
+      "filename": "model-00001-of-00008.safetensors",
+      "s3_key": "models/Qwen/Qwen3-14B/model-00001-of-00008.safetensors",
+      "size": 3841788544,
+      "last_modified": "2025-07-23 10:35:18+00:00"
+    },
+    {
+      "filename": "model-00002-of-00008.safetensors",
+      "s3_key": "models/Qwen/Qwen3-14B/model-00002-of-00008.safetensors",
+      "size": 3963750816,
+      "last_modified": "2025-07-23 10:39:55+00:00"
+    },
+    {
+      "filename": "model-00003-of-00008.safetensors",
+      "s3_key": "models/Qwen/Qwen3-14B/model-00003-of-00008.safetensors",
+      "size": 3963750880,
+      "last_modified": "2025-07-23 10:45:35+00:00"
+    },
+    {
+      "filename": "model-00004-of-00008.safetensors",
+      "s3_key": "models/Qwen/Qwen3-14B/model-00004-of-00008.safetensors",
+      "size": 3963750880,
+      "last_modified": "2025-07-23 10:50:30+00:00"
+    },
+    {
+      "filename": "model-00005-of-00008.safetensors",
+      "s3_key": "models/Qwen/Qwen3-14B/model-00005-of-00008.safetensors",
+      "size": 3963750880,
+      "last_modified": "2025-07-23 10:55:42+00:00"
+    },
+    {
+      "filename": "model-00006-of-00008.safetensors",
+      "s3_key": "models/Qwen/Qwen3-14B/model-00006-of-00008.safetensors",
+      "size": 3963750880,
+      "last_modified": "2025-07-23 11:01:13+00:00"
+    },
+    {
+      "filename": "model-00007-of-00008.safetensors",
+      "s3_key": "models/Qwen/Qwen3-14B/model-00007-of-00008.safetensors",
+      "size": 3963750880,
+      "last_modified": "2025-07-23 11:11:21+00:00"
+    },
+    {
+      "filename": "model-00008-of-00008.safetensors",
+      "s3_key": "models/Qwen/Qwen3-14B/model-00008-of-00008.safetensors",
+      "size": 1912371880,
+      "last_modified": "2025-07-23 11:26:45+00:00"
+    },
+    {
+      "filename": "model.safetensors.index.json",
+      "s3_key": "models/Qwen/Qwen3-14B/model.safetensors.index.json",
+      "size": 1496,
+      "last_modified": "2025-07-23 11:34:47+00:00"
+    },
+    {
+      "filename": "tokenizer.json",
+      "s3_key": "models/Qwen/Qwen3-14B/tokenizer.json",
+      "size": 11422654,
+      "last_modified": "2025-07-23 11:34:49+00:00"
+    },
+    {
+      "filename": "tokenizer_config.json",
+      "s3_key": "models/Qwen/Qwen3-14B/tokenizer_config.json",
+      "size": 1545,
+      "last_modified": "2025-07-23 11:35:02+00:00"
+    },
+    {
+      "filename": "vocab.json",
+      "s3_key": "models/Qwen/Qwen3-14B/vocab.json",
+      "size": 1081339,
+      "last_modified": "2025-07-23 11:35:03+00:00"
+    }
+  ],
+  "usage_instructions": {
+    "download_command": "aws s3 sync s3://asoba-llm-cache/models/Qwen/Qwen3-14B/ ./models/Qwen/Qwen3-14B/",
+    "transformers_cache": "TRANSFORMERS_CACHE=/path/to/models python script.py",
+    "direct_load": "model = AutoModelForCausalLM.from_pretrained('s3://asoba-llm-cache/models/Qwen/Qwen3-14B/')"
+  }
+}

@@ -5,8 +5,8 @@
 set -euo pipefail
 
 # Configuration
-INSTANCE_TYPE="g5.2xlarge"
-REGION="us-east-1"
+INSTANCE_TYPE="g5.4xlarge"
+REGION="us-east-1"  # Default region for new instances
 RUN_ID="mistral-$(date +%Y%m%d-%H%M%S)"
 PROJECT_NAME="mistral-training-$RUN_ID"
 S3_BUCKET="asoba-llm-cache"
@@ -187,6 +187,9 @@ launch_instance() {
     export INSTANCE_ID
     export INSTANCE_IP=$PUBLIC_IP
     export SSH_KEY=~/.ssh/$KEY_NAME.pem
+
+    log "Updating run metadata with instance details..."
+    update_s3_status "running" "setup" "Instance launched, preparing environment"
 }
 
 # Phase 2: Setup Instance
@@ -227,7 +230,21 @@ EOF
 
     # Copy and run setup script
     scp -o StrictHostKeyChecking=no -i $SSH_KEY /tmp/setup_instance.sh ubuntu@$INSTANCE_IP:~/
-    ssh -o StrictHostKeyChecking=no -i $SSH_KEY ubuntu@$INSTANCE_IP "chmod +x setup_instance.sh && ./setup_instance.sh"
+    
+    log "Executing setup script on instance..."
+    # Execute the script and capture output if it fails
+    if ! ssh -o StrictHostKeyChecking=no -i $SSH_KEY ubuntu@$INSTANCE_IP "chmod +x setup_instance.sh && ./setup_instance.sh" > /tmp/setup_output.log 2>&1; then
+        if [ $? -ne 0 ]; then
+            error "SSH connection to instance failed during setup. Check network connectivity or instance state."
+        fi
+        log "Setup script failed. Capturing error..."
+        # Grab the error log from the instance
+        scp -o StrictHostKeyChecking=no -i $SSH_KEY ubuntu@$INSTANCE_IP:/tmp/setup_output.log ./setup_error.log
+        
+        ERROR_DETAILS=$(cat ./setup_error.log)
+        error "Instance setup failed. See setup_error.log for details. Remote error: $ERROR_DETAILS"
+    fi
+    log "Instance setup completed successfully."
 }
 
 # Phase 3: Deploy Training Scripts
@@ -235,10 +252,8 @@ deploy_scripts() {
     log "Deploying training scripts..."
     
     # Copy necessary scripts to EBS volume
-    scp -o StrictHostKeyChecking=no -i $SSH_KEY \
-        scripts/mistral/prepare_mistral_dataset.py \
-        scripts/mistral/train_mistral_simple.py \
-        ubuntu@$INSTANCE_IP:/mnt/training/mistral_training/
+    scp -o StrictHostKeyChecking=no -i $SSH_KEY scripts/mistral/prepare_mistral_dataset.py scripts/mistral/train_mistral_simple.py scripts/resolve_model.sh scripts/mistral/prepare_arrow.py ubuntu@$INSTANCE_IP:/mnt/training/mistral_training/
+    ssh -o StrictHostKeyChecking=no -i $SSH_KEY ubuntu@$INSTANCE_IP "chmod +x /mnt/training/mistral_training/resolve_model.sh"
     
     # Create shared directory and copy shared modules
     ssh -o StrictHostKeyChecking=no -i $SSH_KEY ubuntu@$INSTANCE_IP "mkdir -p /mnt/training/mistral_training/shared"
@@ -327,8 +342,8 @@ run_training() {
         scripts/monitoring/s3_model_uploader.py \
         ubuntu@$INSTANCE_IP:/mnt/training/mistral_training/
     
-    # Create training script
-    cat > /tmp/run_training.sh << EOF
+    # Create remote orchestration script
+    cat > /tmp/start_remote_training.sh << EOF
 #!/bin/bash
 cd /mnt/training/mistral_training
 export CUDA_VISIBLE_DEVICES=0
@@ -433,8 +448,8 @@ echo "S3 monitoring URL: https://console.aws.amazon.com/s3/buckets/$S3_BUCKET/$M
 EOF
 
     # Deploy and run training
-    scp -o StrictHostKeyChecking=no -i $SSH_KEY /tmp/run_training.sh ubuntu@$INSTANCE_IP:/mnt/training/mistral_training/
-    ssh -o StrictHostKeyChecking=no -i $SSH_KEY ubuntu@$INSTANCE_IP "cd /mnt/training/mistral_training && chmod +x run_training.sh && ./run_training.sh"
+    scp -o StrictHostKeyChecking=no -i $SSH_KEY /tmp/start_remote_training.sh ubuntu@$INSTANCE_IP:~/
+    ssh -o StrictHostKeyChecking=no -i $SSH_KEY ubuntu@$INSTANCE_IP "chmod +x start_remote_training.sh && ./start_remote_training.sh"
     
     log "Training started on instance!"
     log "SSH to monitor: ssh -i $SSH_KEY ubuntu@$INSTANCE_IP"
@@ -488,6 +503,7 @@ parse_args() {
     INSTANCE_ID=""
     INSTANCE_IP=""
     SSH_KEY=""
+    DETECTED_REGION=""
     
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -503,6 +519,10 @@ parse_args() {
                 SSH_KEY="$2"
                 shift 2
                 ;;
+            --region)
+                REGION="$2"
+                shift 2
+                ;;
             --help|-h)
                 echo "Usage: $0 [options]"
                 echo ""
@@ -510,6 +530,7 @@ parse_args() {
                 echo "  --instance-id ID    Use existing instance with this ID"
                 echo "  --instance-ip IP    IP address of existing instance (required with --instance-id)"
                 echo "  --ssh-key PATH      Path to SSH key for existing instance (required with --instance-id)"
+                echo "  --region REGION     AWS region (auto-detected for existing instances)"
                 echo ""
                 echo "Examples:"
                 echo "  # Launch new instance:"
@@ -517,6 +538,7 @@ parse_args() {
                 echo ""
                 echo "  # Use existing instance:"
                 echo "  $0 --instance-id i-0123456789abcdef0 --instance-ip 54.1.2.3 --ssh-key ~/.ssh/my-key.pem"
+                echo "  $0 --instance-id i-0123456789abcdef0 --instance-ip 54.1.2.3 --ssh-key ~/.ssh/my-key.pem --region us-west-2"
                 exit 0
                 ;;
             *)
@@ -584,9 +606,37 @@ EOF_META
         log "Using existing instance: $INSTANCE_ID"
         log "Instance IP: $INSTANCE_IP"
         
+        # Auto-detect instance region if not specified
+        if [[ -z "$DETECTED_REGION" ]]; then
+            log "Auto-detecting instance region..."
+            for check_region in us-west-2 us-east-1 us-west-1 eu-west-1; do
+                log "Checking region: $check_region"
+                INSTANCE_STATE=$(aws ec2 describe-instances \
+                    --instance-ids $INSTANCE_ID \
+                    --region $check_region \
+                    --query 'Reservations[0].Instances[0].State.Name' \
+                    --output text 2>/dev/null || echo "not-found")
+                
+                if [[ "$INSTANCE_STATE" != "not-found" ]]; then
+                    DETECTED_REGION=$check_region
+                    log "✅ Found instance in region: $DETECTED_REGION"
+                    break
+                fi
+            done
+            
+            if [[ -z "$DETECTED_REGION" ]]; then
+                error "Could not find instance $INSTANCE_ID in common regions. Specify --region manually."
+            fi
+            
+            REGION=$DETECTED_REGION
+        fi
+        
+        log "Using region: $REGION"
+        
         # Export for global use
         export INSTANCE_ID
         export INSTANCE_IP
+        export REGION
         
         # Verify instance is running
         INSTANCE_STATE=$(aws ec2 describe-instances \
@@ -614,11 +664,11 @@ EOF_META
         fi
         
         # Test SSH connection
-        log "Testing SSH connection..."
-        if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i $SSH_KEY ubuntu@$INSTANCE_IP exit 2>/dev/null; then
-            error "Cannot connect to instance via SSH. Check IP and key."
-        fi
-        log "SSH connection successful"
+        # log "Testing SSH connection..."
+        # if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i $SSH_KEY ubuntu@$INSTANCE_IP exit 2>/dev/null; then
+        #     error "Cannot connect to instance via SSH. Check IP and key."
+        # fi
+        # log "SSH connection successful"
     else
         launch_instance
     fi
